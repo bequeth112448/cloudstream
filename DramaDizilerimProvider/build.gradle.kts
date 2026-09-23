@@ -1,1 +1,9 @@
-// Provider-specific Gradle configuration is inherited from the root build.gradle.kts.
+version = 1
+
+cloudstream {
+    description = "Drama Dizilerim dizi sağlayıcısı"
+    authors = listOf("Ali Sezen")
+    status = 1
+    tvTypes = listOf("TvSeries")
+    language = "tr"
+}
