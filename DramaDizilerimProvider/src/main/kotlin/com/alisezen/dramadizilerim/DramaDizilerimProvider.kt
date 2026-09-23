@@ -96,7 +96,8 @@ class DramaDizilerimProvider : MainAPI() {
         ).forEach { element ->
 
             val url =
-                element.attr("abs:href")
+                element
+                    .attr("abs:href")
                     .trim()
 
             if (
@@ -109,8 +110,12 @@ class DramaDizilerimProvider : MainAPI() {
             val normalizedUrl =
                 url.substringBefore("#")
                     .substringBefore("?")
+                    .trimEnd('/')
 
-            if (!seen.add(normalizedUrl)) {
+            if (
+                normalizedUrl.isBlank() ||
+                !seen.add(normalizedUrl)
+            ) {
                 return@forEach
             }
 
@@ -155,8 +160,24 @@ class DramaDizilerimProvider : MainAPI() {
         val seen =
             HashSet<String>()
 
+        val searchQuery =
+            query.trim()
+
+        /*
+         * Boş arama yapılırsa hiçbir sonuç döndürme.
+         */
+        if (searchQuery.isBlank()) {
+            return emptyList()
+        }
+
         try {
 
+            /*
+             * DramaDizilerim'in dizi listesini alıyoruz.
+             *
+             * Buradaki gerçek /dizi/ bağlantıları
+             * üzerinden arama yapıyoruz.
+             */
             val document =
                 app.get("$mainUrl/series").document
 
@@ -165,9 +186,13 @@ class DramaDizilerimProvider : MainAPI() {
             ).forEach { element ->
 
                 val url =
-                    element.attr("abs:href")
+                    element
+                        .attr("abs:href")
                         .trim()
 
+                /*
+                 * Yalnızca gerçek dizi bağlantılarını kabul et.
+                 */
                 if (
                     url.isBlank() ||
                     !url.contains("/dizi/")
@@ -175,25 +200,39 @@ class DramaDizilerimProvider : MainAPI() {
                     return@forEach
                 }
 
+                /*
+                 * Query string ve anchor temizleniyor.
+                 */
                 val normalizedUrl =
                     url.substringBefore("#")
                         .substringBefore("?")
+                        .trimEnd('/')
 
-                if (!seen.add(normalizedUrl)) {
+                if (
+                    normalizedUrl.isBlank() ||
+                    !seen.add(normalizedUrl)
+                ) {
                     return@forEach
                 }
 
+                /*
+                 * Dizi başlığını bul.
+                 */
                 val title =
                     titleFromElement(element)
+                        .trim()
 
                 if (title.isBlank()) {
                     return@forEach
                 }
 
+                /*
+                 * Kullanıcının aradığı kelime başlıkta yoksa
+                 * sonucu gösterme.
+                 */
                 if (
-                    query.isNotBlank() &&
                     !title.contains(
-                        query,
+                        searchQuery,
                         ignoreCase = true
                     )
                 ) {
@@ -219,34 +258,24 @@ class DramaDizilerimProvider : MainAPI() {
             }
 
         } catch (_: Exception) {
-            // Arama sayfası başarısız olursa fallback kullanılır.
+            /*
+             * Siteye erişilemezse boş sonuç döndür.
+             *
+             * Burada artık sahte URL oluşturulmuyor.
+             */
         }
 
-        if (
-            results.isEmpty() &&
-            query.isNotBlank()
-        ) {
-
-            val slug =
-                query.trim()
-                    .lowercase()
-                    .replace(
-                        Regex("[^a-z0-9çğıöşü -]"),
-                        ""
-                    )
-                    .replace(
-                        Regex("\\s+"),
-                        "-"
-                    )
-
-            results +=
-                newTvSeriesSearchResponse(
-                    query.trim(),
-                    "$mainUrl/dizi/$slug",
-                    TvType.TvSeries
-                )
-        }
-
+        /*
+         * ÖNEMLİ:
+         *
+         * Eğer gerçek dizi bulunamadıysa sonuç boş kalır.
+         *
+         * Artık:
+         *
+         * /dizi/ali
+         *
+         * gibi sahte URL oluşturulmuyor.
+         */
         return results
     }
 
@@ -340,7 +369,8 @@ class DramaDizilerimProvider : MainAPI() {
         ).forEach { slide ->
 
             val rawUrl =
-                slide.attr("data-url")
+                slide
+                    .attr("data-url")
                     .trim()
 
             if (rawUrl.isBlank()) {
@@ -350,7 +380,10 @@ class DramaDizilerimProvider : MainAPI() {
             val episodeUrl =
                 absoluteUrl(rawUrl)
 
-            if (!episodeUrl.contains("/izle/")) {
+            if (
+                episodeUrl.isBlank() ||
+                !episodeUrl.contains("/izle/")
+            ) {
                 return@forEach
             }
 
@@ -422,7 +455,10 @@ class DramaDizilerimProvider : MainAPI() {
                 val episodeUrl =
                     absoluteUrl(rawUrl)
 
-                if (!episodeUrl.contains("/izle/")) {
+                if (
+                    episodeUrl.isBlank() ||
+                    !episodeUrl.contains("/izle/")
+                ) {
                     return@forEach
                 }
 
@@ -463,9 +499,6 @@ class DramaDizilerimProvider : MainAPI() {
         /*
          * 3. Fallback:
          * Normal /izle/ linkleri
-         *
-         * Örnek:
-         * /izle/disi-kurt-gelin?s=1&e=1
          */
         if (episodes.isEmpty()) {
 
@@ -478,7 +511,10 @@ class DramaDizilerimProvider : MainAPI() {
                         .attr("abs:href")
                         .trim()
 
-                if (!episodeUrl.contains("/izle/")) {
+                if (
+                    episodeUrl.isBlank() ||
+                    !episodeUrl.contains("/izle/")
+                ) {
                     return@forEach
                 }
 
@@ -529,21 +565,21 @@ class DramaDizilerimProvider : MainAPI() {
         }
 
         /*
-         * Burada Episode.data veya Episode.url
-         * kullanılmıyor.
-         *
-         * CloudStream sürümünde bu alanlara doğrudan
-         * erişim olmadığı için sadece sezon/bölüm
-         * sıralaması yapılıyor.
+         * Aynı bölüm birden fazla kez geldiyse
+         * sezon + bölüm sırasına göre düzenle.
          */
         val uniqueEpisodes =
-            episodes.sortedWith(
-                compareBy<Episode> {
-                    it.season ?: 1
-                }.thenBy {
-                    it.episode ?: 1
+            episodes
+                .distinctBy {
+                    "${it.season ?: 1}-${it.episode ?: 1}-${it.name}"
                 }
-            )
+                .sortedWith(
+                    compareBy<Episode> {
+                        it.season ?: 1
+                    }.thenBy {
+                        it.episode ?: 1
+                    }
+                )
 
         return newTvSeriesLoadResponse(
             title,
@@ -576,12 +612,9 @@ class DramaDizilerimProvider : MainAPI() {
             LinkedHashSet<String>()
 
         /*
-         * DramaDizilerim'in gerçek player yapısı:
+         * DramaDizilerim player:
          *
          * .lazy-player[data-src]
-         *
-         * Site JavaScript'i bu data-src değerini
-         * iframe src olarak kullanıyor.
          */
         episodeDocument
             .select(
@@ -601,7 +634,7 @@ class DramaDizilerimProvider : MainAPI() {
             }
 
         /*
-         * Sayfada doğrudan iframe varsa onu da al.
+         * Doğrudan iframe varsa onu da al.
          */
         episodeDocument
             .select(
@@ -626,7 +659,7 @@ class DramaDizilerimProvider : MainAPI() {
         var linkFound = false
 
         /*
-         * Bulunan player/embed sayfalarını aç.
+         * Player/embed sayfalarını aç.
          */
         for (embedUrl in embedUrls) {
 
@@ -682,8 +715,8 @@ class DramaDizilerimProvider : MainAPI() {
                     }
 
                 /*
-                 * Eğer embed sayfasında doğrudan
-                 * video source varsa.
+                 * Embed sayfasında doğrudan video
+                 * kaynağı varsa.
                  */
                 embedDocument
                     .select(
@@ -734,12 +767,18 @@ class DramaDizilerimProvider : MainAPI() {
                         }
 
                     } catch (_: Exception) {
-                        // Bir player çalışmazsa diğerini dene.
+                        /*
+                         * Bir player çalışmazsa
+                         * diğer player denenir.
+                         */
                     }
                 }
 
             } catch (_: Exception) {
-                // Bir embed başarısızsa diğer embed'i dene.
+                /*
+                 * Bir embed başarısızsa
+                 * diğer embed denenir.
+                 */
             }
         }
 
