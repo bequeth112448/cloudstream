@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -24,6 +26,38 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
 
-      - name: Build
-        run: ./gradlew DramaDizilerimProvider:make --no-daemon
+      - name: Build extensions and plugin list
+        run: gradle make makePluginsJson --no-daemon
+
+      - name: Publish builds branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/cloudstream-builds
+          mkdir -p /tmp/cloudstream-builds
+
+          cp build/plugins.json /tmp/cloudstream-builds/plugins.json
+          cp repo.json /tmp/cloudstream-builds/repo.json
+
+          find . -type f -path "*/build/*.cs3" -exec cp {} /tmp/cloudstream-builds/ \;
+
+          if [ -z "$(find /tmp/cloudstream-builds -maxdepth 1 -name '*.cs3' -print -quit)" ]; then
+            echo "No .cs3 plugin was generated."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin builds:refs/remotes/origin/builds || true
+          git switch --orphan builds
+          git rm -rf . || true
+
+          cp /tmp/cloudstream-builds/* .
+          git add .
+          git commit -m "Build CloudStream extensions"
+          git push origin builds --force
