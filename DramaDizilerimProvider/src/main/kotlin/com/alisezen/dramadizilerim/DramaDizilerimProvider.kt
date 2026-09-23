@@ -47,9 +47,13 @@ class DramaDizilerimProvider : MainAPI() {
             }
 
         } catch (_: Exception) {
-            // Fallback aşağıda
+            // Arama başarısız olursa aşağıdaki fallback kullanılacak.
         }
 
+        /*
+         * Site üzerindeki arama sonucu alınamazsa,
+         * kullanıcının yazdığı isimden doğrudan dizi URL'si oluştur.
+         */
         if (results.isEmpty()) {
 
             val slug = query.trim()
@@ -70,17 +74,21 @@ class DramaDizilerimProvider : MainAPI() {
             )
         }
 
-        return results.distinctBy { it.data }
+        /*
+         * SearchResponse içerisinde .data veya .url kullanmıyoruz.
+         * CloudStream'in güncel API'siyle uyumlu olması için
+         * sonuçları doğrudan döndürüyoruz.
+         */
+        return results
     }
 
     override suspend fun load(url: String): LoadResponse {
 
         val doc = app.get(url).document
 
-        // -----------------------------
-        // BAŞLIK
-        // -----------------------------
-
+        /*
+         * Dizi başlığı
+         */
         val title =
             doc.selectFirst("meta[property='og:title']")
                 ?.attr("content")
@@ -92,10 +100,9 @@ class DramaDizilerimProvider : MainAPI() {
                     .substringBefore(" | ")
                     .trim()
 
-        // -----------------------------
-        // POSTER
-        // -----------------------------
-
+        /*
+         * Poster
+         */
         var poster: String? =
             doc.selectFirst(
                 "meta[property='og:image']"
@@ -120,22 +127,23 @@ class DramaDizilerimProvider : MainAPI() {
                 .firstOrNull()
         }
 
-        // -----------------------------
-        // AÇIKLAMA
-        // -----------------------------
-
+        /*
+         * Açıklama
+         */
         val description =
             doc.selectFirst(
                 "meta[property='og:description']"
             )?.attr("content")
 
-        // -----------------------------
-        // BÖLÜMLER
-        // -----------------------------
-
+        /*
+         * Bölümler
+         */
         val episodes = mutableListOf<Episode>()
 
-        // Site option/value yapısı
+        /*
+         * 1. yöntem:
+         * option[value="/izle/..."]
+         */
         doc.select(
             "option[value*='/izle/'], " +
             "option[value*='izle/']"
@@ -180,10 +188,10 @@ class DramaDizilerimProvider : MainAPI() {
             }
         }
 
-        // -----------------------------
-        // LINK TABANLI BÖLÜMLER
-        // -----------------------------
-
+        /*
+         * 2. yöntem:
+         * a[href*="/izle/"]
+         */
         doc.select(
             "a[href*='/izle/'], " +
             "[data-url*='/izle/']"
@@ -236,10 +244,10 @@ class DramaDizilerimProvider : MainAPI() {
             }
         }
 
-        // -----------------------------
-        // DATA ATTRIBUTES
-        // -----------------------------
-
+        /*
+         * 3. yöntem:
+         * data-url + data-episode kullanan yapılar
+         */
         doc.select(
             "[data-url][data-episode], " +
             ".v-slide[data-url]"
@@ -283,22 +291,20 @@ class DramaDizilerimProvider : MainAPI() {
             }
         }
 
-        // -----------------------------
-        // TEKRARLARI TEMİZLE
-        // -----------------------------
-
+        /*
+         * Bölümleri sezon ve bölüm numarasına göre sırala.
+         *
+         * Burada .url veya .data kullanılmıyor.
+         */
         val uniqueEpisodes =
-            episodes
-                .distinctBy { it.url }
-                .sortedWith(
-                    compareBy<Episode> { it.season }
-                        .thenBy { it.episode }
-                )
+            episodes.sortedWith(
+                compareBy<Episode> { it.season }
+                    .thenBy { it.episode }
+            )
 
-        // -----------------------------
-        // SONUÇ
-        // -----------------------------
-
+        /*
+         * Dizi sonucu
+         */
         return newTvSeriesLoadResponse(
             title,
             url,
@@ -311,10 +317,6 @@ class DramaDizilerimProvider : MainAPI() {
         }
     }
 
-    // =====================================================
-    // VIDEO
-    // =====================================================
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -324,13 +326,17 @@ class DramaDizilerimProvider : MainAPI() {
 
         val doc = app.get(data).document
 
-        // iframe
+        /*
+         * Öncelikle iframe src
+         */
         var embed =
             doc.selectFirst(
                 "iframe[src]"
             )?.attr("abs:src")
 
-        // lazy iframe
+        /*
+         * iframe data-src
+         */
         if (embed.isNullOrBlank()) {
 
             embed =
@@ -339,7 +345,9 @@ class DramaDizilerimProvider : MainAPI() {
                 )?.attr("data-src")
         }
 
-        // lazy-player
+        /*
+         * Lazy player
+         */
         if (embed.isNullOrBlank()) {
 
             embed =
@@ -348,7 +356,9 @@ class DramaDizilerimProvider : MainAPI() {
                 )?.attr("data-src")
         }
 
-        // video source
+        /*
+         * Doğrudan video source
+         */
         if (embed.isNullOrBlank()) {
 
             embed =
@@ -357,10 +367,16 @@ class DramaDizilerimProvider : MainAPI() {
                 )?.attr("abs:src")
         }
 
+        /*
+         * Hiçbir oynatıcı bulunamadıysa
+         */
         if (embed.isNullOrBlank()) {
             return false
         }
 
+        /*
+         * CloudStream extractor sistemine gönder.
+         */
         return loadExtractor(
             embed,
             data,
