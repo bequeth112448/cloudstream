@@ -70,7 +70,7 @@ class DramaDizilerimProvider : MainAPI() {
             )
         }
 
-        return results.distinctBy { it.url }
+        return results.distinctBy { it.data }
     }
 
     override suspend fun load(url: String): LoadResponse {
