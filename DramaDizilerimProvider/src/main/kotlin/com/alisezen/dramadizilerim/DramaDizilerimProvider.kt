@@ -33,7 +33,10 @@ class DramaDizilerimProvider : MainAPI() {
         }
     }
 
-    private fun posterFromElement(element: org.jsoup.nodes.Element): String? {
+    private fun posterFromElement(
+        element: org.jsoup.nodes.Element
+    ): String? {
+
         val poster =
             element.attr("data-poster")
                 .ifBlank { element.attr("data-src") }
@@ -60,9 +63,10 @@ class DramaDizilerimProvider : MainAPI() {
         }
 
         val title =
-            element.selectFirst(
-                "img[alt]"
-            )?.attr("alt")?.trim()
+            element
+                .selectFirst("img[alt]")
+                ?.attr("alt")
+                ?.trim()
 
         if (!title.isNullOrBlank()) {
             return title
@@ -215,14 +219,13 @@ class DramaDizilerimProvider : MainAPI() {
             }
 
         } catch (_: Exception) {
-            // Fallback aşağıda.
+            // Arama sayfası başarısız olursa fallback kullanılır.
         }
 
-        /*
-         * Site arama sayfası değişirse,
-         * doğrudan dizi slug'ı üzerinden açmayı deniyoruz.
-         */
-        if (results.isEmpty() && query.isNotBlank()) {
+        if (
+            results.isEmpty() &&
+            query.isNotBlank()
+        ) {
 
             val slug =
                 query.trim()
@@ -279,9 +282,6 @@ class DramaDizilerimProvider : MainAPI() {
                 ?.attr("content")
                 ?.trim()
 
-        /*
-         * Dizi sayfasındaki gerçek poster.
-         */
         if (poster.isNullOrBlank()) {
 
             poster =
@@ -332,15 +332,8 @@ class DramaDizilerimProvider : MainAPI() {
             mutableListOf<Episode>()
 
         /*
-         * Sitenin gerçek bölüm yapısı:
-         *
-         * <section
-         *   class="v-slide"
-         *   data-url=".../izle/..."
-         *   data-episode="1"
-         *   data-season="1"
-         *   data-poster="..."
-         * >
+         * 1. Öncelik:
+         * .v-slide[data-url]
          */
         document.select(
             ".v-slide[data-url]"
@@ -362,24 +355,28 @@ class DramaDizilerimProvider : MainAPI() {
             }
 
             val episodeNumber =
-                slide.attr("data-episode")
+                slide
+                    .attr("data-episode")
                     .toIntOrNull()
                     ?: 1
 
             val seasonNumber =
-                slide.attr("data-season")
+                slide
+                    .attr("data-season")
                     .toIntOrNull()
                     ?: 1
 
             val episodeTitle =
-                slide.attr("data-title")
+                slide
+                    .attr("data-title")
                     .trim()
                     .ifBlank {
                         "Bölüm $episodeNumber"
                     }
 
             val episodePoster =
-                slide.attr("data-poster")
+                slide
+                    .attr("data-poster")
                     .trim()
                     .takeIf {
                         it.isNotBlank()
@@ -404,8 +401,8 @@ class DramaDizilerimProvider : MainAPI() {
         }
 
         /*
-         * Bazı sayfalarda v-slide yerine
-         * data-url taşıyan başka bölüm elemanları olabilir.
+         * 2. Fallback:
+         * data-url + data-episode
          */
         if (episodes.isEmpty()) {
 
@@ -414,7 +411,8 @@ class DramaDizilerimProvider : MainAPI() {
             ).forEach { element ->
 
                 val rawUrl =
-                    element.attr("data-url")
+                    element
+                        .attr("data-url")
                         .trim()
 
                 if (rawUrl.isBlank()) {
@@ -463,9 +461,11 @@ class DramaDizilerimProvider : MainAPI() {
         }
 
         /*
-         * Son güvenlik katmanı:
-         * Eğer dizi sayfasında sadece /izle/ linkleri
-         * varsa onları da bölüm olarak kabul ediyoruz.
+         * 3. Fallback:
+         * Normal /izle/ linkleri
+         *
+         * Örnek:
+         * /izle/disi-kurt-gelin?s=1&e=1
          */
         if (episodes.isEmpty()) {
 
@@ -503,7 +503,8 @@ class DramaDizilerimProvider : MainAPI() {
                         ?: 1
 
                 val episodeTitle =
-                    element.text()
+                    element
+                        .text()
                         .replace(
                             Regex("\\s+"),
                             " "
@@ -528,19 +529,21 @@ class DramaDizilerimProvider : MainAPI() {
         }
 
         /*
-         * Aynı bölümü birden fazla selector yakalarsa
-         * Episode.data üzerinden tekrarları kaldırıyoruz.
+         * Burada Episode.data veya Episode.url
+         * kullanılmıyor.
+         *
+         * CloudStream sürümünde bu alanlara doğrudan
+         * erişim olmadığı için sadece sezon/bölüm
+         * sıralaması yapılıyor.
          */
         val uniqueEpisodes =
-            episodes
-                .distinctBy { it.data }
-                .sortedWith(
-                    compareBy<Episode> {
-                        it.season ?: 1
-                    }.thenBy {
-                        it.episode ?: 1
-                    }
-                )
+            episodes.sortedWith(
+                compareBy<Episode> {
+                    it.season ?: 1
+                }.thenBy {
+                    it.episode ?: 1
+                }
+            )
 
         return newTvSeriesLoadResponse(
             title,
@@ -566,22 +569,20 @@ class DramaDizilerimProvider : MainAPI() {
         ) -> Unit
     ): Boolean {
 
-        /*
-         * data artık doğrudan gerçek bölüm URL'sidir:
-         *
-         * /izle/disi-kurt-gelin?s=1&e=1
-         */
         val episodeDocument =
             app.get(data).document
 
-        /*
-         * Sitenin gerçek player kaynağı:
-         *
-         * .lazy-player[data-src]
-         */
         val embedUrls =
             LinkedHashSet<String>()
 
+        /*
+         * DramaDizilerim'in gerçek player yapısı:
+         *
+         * .lazy-player[data-src]
+         *
+         * Site JavaScript'i bu data-src değerini
+         * iframe src olarak kullanıyor.
+         */
         episodeDocument
             .select(
                 ".lazy-player[data-src]"
@@ -589,7 +590,8 @@ class DramaDizilerimProvider : MainAPI() {
             .forEach { element ->
 
                 val value =
-                    element.attr("data-src")
+                    element
+                        .attr("data-src")
                         .trim()
 
                 if (value.isNotBlank()) {
@@ -599,7 +601,7 @@ class DramaDizilerimProvider : MainAPI() {
             }
 
         /*
-         * Fallback olarak doğrudan iframe varsa onu da al.
+         * Sayfada doğrudan iframe varsa onu da al.
          */
         episodeDocument
             .select(
@@ -608,7 +610,8 @@ class DramaDizilerimProvider : MainAPI() {
             .forEach { iframe ->
 
                 val value =
-                    iframe.attr("abs:src")
+                    iframe
+                        .attr("abs:src")
                         .trim()
 
                 if (value.isNotBlank()) {
@@ -623,11 +626,7 @@ class DramaDizilerimProvider : MainAPI() {
         var linkFound = false
 
         /*
-         * Önce sitenin kendi embed sayfasını açıyoruz.
-         *
-         * embed.php bir CloudStream extractor URL'si
-         * değildir. Bu nedenle onu doğrudan
-         * loadExtractor() içine vermiyoruz.
+         * Bulunan player/embed sayfalarını aç.
          */
         for (embedUrl in embedUrls) {
 
@@ -639,12 +638,12 @@ class DramaDizilerimProvider : MainAPI() {
                         referer = data
                     ).document
 
-                /*
-                 * Embed sayfasındaki iframe'ler.
-                 */
                 val iframeUrls =
                     LinkedHashSet<String>()
 
+                /*
+                 * Normal iframe
+                 */
                 embedDocument
                     .select(
                         "iframe[src]"
@@ -656,16 +655,13 @@ class DramaDizilerimProvider : MainAPI() {
                                 .attr("abs:src")
                                 .trim()
 
-                        if (
-                            iframeUrl.isNotBlank()
-                        ) {
-                            iframeUrls +=
-                                iframeUrl
+                        if (iframeUrl.isNotBlank()) {
+                            iframeUrls += iframeUrl
                         }
                     }
 
                 /*
-                 * data-src kullanılan iframe/player.
+                 * Lazy iframe
                  */
                 embedDocument
                     .select(
@@ -673,23 +669,21 @@ class DramaDizilerimProvider : MainAPI() {
                     )
                     .forEach { iframe ->
 
-                        val iframeUrl =
-                            absoluteUrl(
-                                iframe
-                                    .attr("data-src")
-                                    .trim()
-                            )
+                        val raw =
+                            iframe
+                                .attr("data-src")
+                                .trim()
 
-                        if (
-                            iframeUrl.isNotBlank()
-                        ) {
+                        if (raw.isNotBlank()) {
+
                             iframeUrls +=
-                                iframeUrl
+                                absoluteUrl(raw)
                         }
                     }
 
                 /*
-                 * Doğrudan video kaynakları.
+                 * Eğer embed sayfasında doğrudan
+                 * video source varsa.
                  */
                 embedDocument
                     .select(
@@ -702,18 +696,17 @@ class DramaDizilerimProvider : MainAPI() {
                                 .attr("abs:src")
                                 .trim()
 
-                        if (
-                            videoUrl.isNotBlank()
-                        ) {
+                        if (videoUrl.isNotBlank()) {
 
                             callback(
                                 newExtractorLink(
                                     name,
                                     "DramaDizilerim",
                                     videoUrl,
-                                    data,
-                                    false
-                                )
+                                    ExtractorLinkType.VIDEO
+                                ) {
+                                    referer = data
+                                }
                             )
 
                             linkFound = true
@@ -721,8 +714,8 @@ class DramaDizilerimProvider : MainAPI() {
                     }
 
                 /*
-                 * Gerçek iframe bulunduysa
-                 * CloudStream extractor sistemine veriyoruz.
+                 * Embed içindeki iframe'leri
+                 * CloudStream extractor sistemine gönder.
                  */
                 for (iframeUrl in iframeUrls) {
 
@@ -746,7 +739,7 @@ class DramaDizilerimProvider : MainAPI() {
                 }
 
             } catch (_: Exception) {
-                // Bir embed kaynağı başarısızsa diğerini dene.
+                // Bir embed başarısızsa diğer embed'i dene.
             }
         }
 
