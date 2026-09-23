@@ -1,0 +1,8 @@
+{
+  "name": "DramaDizilerim",
+  "description": "Kişisel CloudStream eklenti deposu",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/bequeth112448/cloudstream/builds/plugins.json"
+  ]
+}
