@@ -36,7 +36,7 @@ subprojects {
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
     cloudstream {
-        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "https://github.com/bequeth112448/cloudstream")
+        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "bequeth112448/cloudstream")
     }
 
     android {
