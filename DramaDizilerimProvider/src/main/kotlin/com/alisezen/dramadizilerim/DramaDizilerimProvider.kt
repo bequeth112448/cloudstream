@@ -10,301 +10,538 @@ class DramaDizilerimProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.TvSeries)
     override var lang = "tr"
 
+    override val mainPage = mainPageOf(
+        "$mainUrl/dizi" to "Diziler"
+    )
+
     private fun absoluteUrl(raw: String): String {
         val value = raw.trim()
+
+        if (value.isBlank()) {
+            return ""
+        }
 
         return when {
             value.startsWith("http://") ||
             value.startsWith("https://") -> value
 
-            value.startsWith("/") -> mainUrl + value
+            value.startsWith("//") -> "https:$value"
+
+            value.startsWith("/") -> "$mainUrl$value"
 
             else -> "$mainUrl/$value"
         }
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
+    private fun posterFromElement(element: org.jsoup.nodes.Element): String? {
+        val poster =
+            element.attr("data-poster")
+                .ifBlank { element.attr("data-src") }
+                .ifBlank { element.attr("src") }
 
-        val results = mutableListOf<SearchResponse>()
-        val searchUrl = "$mainUrl/series"
+        return if (poster.isBlank()) {
+            null
+        } else {
+            absoluteUrl(poster)
+        }
+    }
+
+    private fun titleFromElement(
+        element: org.jsoup.nodes.Element
+    ): String {
+
+        val dataTitle =
+            element.attr("data-title").trim()
+
+        if (dataTitle.isNotBlank()) {
+            return dataTitle
+                .replace(Regex("\\s+"), " ")
+                .trim()
+        }
+
+        val title =
+            element.selectFirst(
+                "img[alt]"
+            )?.attr("alt")?.trim()
+
+        if (!title.isNullOrBlank()) {
+            return title
+        }
+
+        return element.text()
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+
+        val document =
+            app.get(request.data).document
+
+        val results =
+            mutableListOf<SearchResponse>()
+
+        val seen =
+            HashSet<String>()
+
+        document.select(
+            "a[href*='/dizi/']"
+        ).forEach { element ->
+
+            val url =
+                element.attr("abs:href")
+                    .trim()
+
+            if (
+                url.isBlank() ||
+                !url.contains("/dizi/")
+            ) {
+                return@forEach
+            }
+
+            val normalizedUrl =
+                url.substringBefore("#")
+                    .substringBefore("?")
+
+            if (!seen.add(normalizedUrl)) {
+                return@forEach
+            }
+
+            val title =
+                titleFromElement(element)
+
+            if (title.isBlank()) {
+                return@forEach
+            }
+
+            val poster =
+                posterFromElement(element)
+                    ?: element
+                        .selectFirst("img")
+                        ?.let { img ->
+                            posterFromElement(img)
+                        }
+
+            results +=
+                newTvSeriesSearchResponse(
+                    title,
+                    normalizedUrl,
+                    TvType.TvSeries
+                ) {
+                    posterUrl = poster
+                }
+        }
+
+        return newHomePageResponse(
+            request.name,
+            results
+        )
+    }
+
+    override suspend fun search(
+        query: String
+    ): List<SearchResponse> {
+
+        val results =
+            mutableListOf<SearchResponse>()
+
+        val seen =
+            HashSet<String>()
 
         try {
-            val doc = app.get(searchUrl).document
 
-            doc.select("a[href*='/dizi/']").forEach { a ->
+            val document =
+                app.get("$mainUrl/series").document
 
-                val href = a.attr("abs:href")
-                val title = a.text().trim()
+            document.select(
+                "a[href*='/dizi/']"
+            ).forEach { element ->
 
-                if (href.isNotBlank() && title.isNotBlank()) {
+                val url =
+                    element.attr("abs:href")
+                        .trim()
 
-                    results += newTvSeriesSearchResponse(
-                        title,
-                        href,
-                        TvType.TvSeries
-                    )
+                if (
+                    url.isBlank() ||
+                    !url.contains("/dizi/")
+                ) {
+                    return@forEach
                 }
+
+                val normalizedUrl =
+                    url.substringBefore("#")
+                        .substringBefore("?")
+
+                if (!seen.add(normalizedUrl)) {
+                    return@forEach
+                }
+
+                val title =
+                    titleFromElement(element)
+
+                if (title.isBlank()) {
+                    return@forEach
+                }
+
+                if (
+                    query.isNotBlank() &&
+                    !title.contains(
+                        query,
+                        ignoreCase = true
+                    )
+                ) {
+                    return@forEach
+                }
+
+                val poster =
+                    posterFromElement(element)
+                        ?: element
+                            .selectFirst("img")
+                            ?.let { img ->
+                                posterFromElement(img)
+                            }
+
+                results +=
+                    newTvSeriesSearchResponse(
+                        title,
+                        normalizedUrl,
+                        TvType.TvSeries
+                    ) {
+                        posterUrl = poster
+                    }
             }
 
         } catch (_: Exception) {
-            // Arama başarısız olursa aşağıdaki fallback kullanılacak.
+            // Fallback aşağıda.
         }
 
         /*
-         * Site üzerindeki arama sonucu alınamazsa,
-         * kullanıcının yazdığı isimden doğrudan dizi URL'si oluştur.
+         * Site arama sayfası değişirse,
+         * doğrudan dizi slug'ı üzerinden açmayı deniyoruz.
          */
-        if (results.isEmpty()) {
+        if (results.isEmpty() && query.isNotBlank()) {
 
-            val slug = query.trim()
-                .lowercase()
-                .replace(
-                    Regex("[^a-z0-9çğıöşü -]"),
-                    ""
-                )
-                .replace(
-                    Regex("\\s+"),
-                    "-"
-                )
+            val slug =
+                query.trim()
+                    .lowercase()
+                    .replace(
+                        Regex("[^a-z0-9çğıöşü -]"),
+                        ""
+                    )
+                    .replace(
+                        Regex("\\s+"),
+                        "-"
+                    )
 
-            results += newTvSeriesSearchResponse(
-                query.trim(),
-                "$mainUrl/dizi/$slug",
-                TvType.TvSeries
-            )
+            results +=
+                newTvSeriesSearchResponse(
+                    query.trim(),
+                    "$mainUrl/dizi/$slug",
+                    TvType.TvSeries
+                )
         }
 
-        /*
-         * SearchResponse içerisinde .data veya .url kullanmıyoruz.
-         * CloudStream'in güncel API'siyle uyumlu olması için
-         * sonuçları doğrudan döndürüyoruz.
-         */
         return results
     }
 
-    override suspend fun load(url: String): LoadResponse {
+    override suspend fun load(
+        url: String
+    ): LoadResponse {
 
-        val doc = app.get(url).document
+        val document =
+            app.get(url).document
 
-        /*
-         * Dizi başlığı
-         */
         val title =
-            doc.selectFirst("meta[property='og:title']")
+            document
+                .selectFirst(
+                    "meta[property='og:title']"
+                )
                 ?.attr("content")
                 ?.substringBefore(" Türkçe Dublaj")
                 ?.substringBefore(" Altyazılı")
                 ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?: doc.title()
+                ?.takeIf {
+                    it.isNotBlank()
+                }
+                ?: document
+                    .title()
                     .substringBefore(" | ")
                     .trim()
 
+        var poster =
+            document
+                .selectFirst(
+                    "meta[property='og:image']"
+                )
+                ?.attr("content")
+                ?.trim()
+
         /*
-         * Poster
+         * Dizi sayfasındaki gerçek poster.
          */
-        var poster: String? =
-            doc.selectFirst(
-                "meta[property='og:image']"
-            )?.attr("content")
+        if (poster.isNullOrBlank()) {
+
+            poster =
+                document
+                    .selectFirst(
+                        "[data-poster]"
+                    )
+                    ?.attr("data-poster")
+                    ?.trim()
+        }
 
         if (poster.isNullOrBlank()) {
 
-            poster = doc.select("img")
-                .mapNotNull { img ->
+            poster =
+                document
+                    .select("img")
+                    .mapNotNull { image ->
 
-                    val src = img.attr("abs:src")
-                        .ifBlank {
-                            img.attr("abs:data-src")
+                        val src =
+                            image
+                                .attr("abs:src")
+                                .ifBlank {
+                                    image.attr(
+                                        "abs:data-src"
+                                    )
+                                }
+
+                        src.takeIf {
+                            it.isNotBlank()
                         }
-
-                    if (src.isBlank()) {
-                        null
-                    } else {
-                        src
                     }
-                }
-                .firstOrNull()
+                    .firstOrNull()
         }
 
-        /*
-         * Açıklama
-         */
+        if (!poster.isNullOrBlank()) {
+            poster = absoluteUrl(poster!!)
+        }
+
         val description =
-            doc.selectFirst(
-                "meta[property='og:description']"
-            )?.attr("content")
+            document
+                .selectFirst(
+                    "meta[property='og:description']"
+                )
+                ?.attr("content")
+                ?.trim()
+
+        val episodes =
+            mutableListOf<Episode>()
 
         /*
-         * Bölümler
+         * Sitenin gerçek bölüm yapısı:
+         *
+         * <section
+         *   class="v-slide"
+         *   data-url=".../izle/..."
+         *   data-episode="1"
+         *   data-season="1"
+         *   data-poster="..."
+         * >
          */
-        val episodes = mutableListOf<Episode>()
-
-        /*
-         * 1. yöntem:
-         * option[value="/izle/..."]
-         */
-        doc.select(
-            "option[value*='/izle/'], " +
-            "option[value*='izle/']"
-        ).forEach { option ->
-
-            val rawUrl = option.attr("value")
-
-            if (rawUrl.isNotBlank()) {
-
-                val epUrl = absoluteUrl(rawUrl)
-
-                if (epUrl.contains("/izle/")) {
-
-                    val text = option.text().trim()
-
-                    val match =
-                        Regex(
-                            "(?:Bölüm|Episode)\\s*(\\d+)",
-                            RegexOption.IGNORE_CASE
-                        ).find(text)
-
-                    val episodeNumber =
-                        match
-                            ?.groupValues
-                            ?.getOrNull(1)
-                            ?.toIntOrNull()
-                            ?: 1
-
-                    episodes += newEpisode(epUrl) {
-
-                        name =
-                            if (text.isNotBlank()) {
-                                text
-                            } else {
-                                "Bölüm $episodeNumber"
-                            }
-
-                        season = 1
-                        episode = episodeNumber
-                    }
-                }
-            }
-        }
-
-        /*
-         * 2. yöntem:
-         * a[href*="/izle/"]
-         */
-        doc.select(
-            "a[href*='/izle/'], " +
-            "[data-url*='/izle/']"
-        ).forEach { element ->
-
-            val rawUrl =
-                element.attr("href")
-                    .ifBlank {
-                        element.attr("data-url")
-                    }
-
-            if (rawUrl.isNotBlank()) {
-
-                val epUrl = absoluteUrl(rawUrl)
-
-                if (epUrl.contains("/izle/")) {
-
-                    val text =
-                        element.attr("data-title")
-                            .ifBlank {
-                                element.text().trim()
-                            }
-
-                    val match =
-                        Regex(
-                            "(?:Bölüm|Episode)\\s*(\\d+)",
-                            RegexOption.IGNORE_CASE
-                        ).find(text)
-
-                    val episodeNumber =
-                        match
-                            ?.groupValues
-                            ?.getOrNull(1)
-                            ?.toIntOrNull()
-                            ?: 1
-
-                    episodes += newEpisode(epUrl) {
-
-                        name =
-                            if (text.isNotBlank()) {
-                                text
-                            } else {
-                                "Bölüm $episodeNumber"
-                            }
-
-                        season = 1
-                        episode = episodeNumber
-                    }
-                }
-            }
-        }
-
-        /*
-         * 3. yöntem:
-         * data-url + data-episode kullanan yapılar
-         */
-        doc.select(
-            "[data-url][data-episode], " +
+        document.select(
             ".v-slide[data-url]"
-        ).forEach { element ->
+        ).forEach { slide ->
 
             val rawUrl =
-                element.attr("data-url")
+                slide.attr("data-url")
+                    .trim()
 
-            if (rawUrl.isNotBlank()) {
+            if (rawUrl.isBlank()) {
+                return@forEach
+            }
 
-                val epUrl = absoluteUrl(rawUrl)
+            val episodeUrl =
+                absoluteUrl(rawUrl)
+
+            if (!episodeUrl.contains("/izle/")) {
+                return@forEach
+            }
+
+            val episodeNumber =
+                slide.attr("data-episode")
+                    .toIntOrNull()
+                    ?: 1
+
+            val seasonNumber =
+                slide.attr("data-season")
+                    .toIntOrNull()
+                    ?: 1
+
+            val episodeTitle =
+                slide.attr("data-title")
+                    .trim()
+                    .ifBlank {
+                        "Bölüm $episodeNumber"
+                    }
+
+            val episodePoster =
+                slide.attr("data-poster")
+                    .trim()
+                    .takeIf {
+                        it.isNotBlank()
+                    }
+                    ?.let {
+                        absoluteUrl(it)
+                    }
+
+            episodes +=
+                newEpisode(episodeUrl) {
+
+                    name = episodeTitle
+
+                    season = seasonNumber
+
+                    episode = episodeNumber
+
+                    posterUrl =
+                        episodePoster
+                            ?: poster
+                }
+        }
+
+        /*
+         * Bazı sayfalarda v-slide yerine
+         * data-url taşıyan başka bölüm elemanları olabilir.
+         */
+        if (episodes.isEmpty()) {
+
+            document.select(
+                "[data-url*='/izle/'][data-episode]"
+            ).forEach { element ->
+
+                val rawUrl =
+                    element.attr("data-url")
+                        .trim()
+
+                if (rawUrl.isBlank()) {
+                    return@forEach
+                }
+
+                val episodeUrl =
+                    absoluteUrl(rawUrl)
+
+                if (!episodeUrl.contains("/izle/")) {
+                    return@forEach
+                }
 
                 val episodeNumber =
-                    element.attr("data-episode")
+                    element
+                        .attr("data-episode")
                         .toIntOrNull()
                         ?: 1
 
                 val seasonNumber =
-                    element.attr("data-season")
+                    element
+                        .attr("data-season")
                         .toIntOrNull()
                         ?: 1
 
-                val text =
-                    element.attr("data-title")
+                val episodeTitle =
+                    element
+                        .attr("data-title")
+                        .trim()
                         .ifBlank {
-                            element.text().trim()
-                        }
-
-                episodes += newEpisode(epUrl) {
-
-                    name =
-                        if (text.isNotBlank()) {
-                            text
-                        } else {
                             "Bölüm $episodeNumber"
                         }
 
-                    season = seasonNumber
-                    episode = episodeNumber
-                }
+                episodes +=
+                    newEpisode(episodeUrl) {
+
+                        name = episodeTitle
+
+                        season = seasonNumber
+
+                        episode = episodeNumber
+
+                        posterUrl = poster
+                    }
             }
         }
 
         /*
-         * Bölümleri sezon ve bölüm numarasına göre sırala.
-         *
-         * Burada .url veya .data kullanılmıyor.
+         * Son güvenlik katmanı:
+         * Eğer dizi sayfasında sadece /izle/ linkleri
+         * varsa onları da bölüm olarak kabul ediyoruz.
          */
-        val uniqueEpisodes =
-            episodes.sortedWith(
-                compareBy<Episode> { it.season }
-                    .thenBy { it.episode }
-            )
+        if (episodes.isEmpty()) {
+
+            document.select(
+                "a[href*='/izle/']"
+            ).forEach { element ->
+
+                val episodeUrl =
+                    element
+                        .attr("abs:href")
+                        .trim()
+
+                if (!episodeUrl.contains("/izle/")) {
+                    return@forEach
+                }
+
+                val episodeNumber =
+                    Regex(
+                        "[?&]e=(\\d+)"
+                    )
+                        .find(episodeUrl)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toIntOrNull()
+                        ?: 1
+
+                val seasonNumber =
+                    Regex(
+                        "[?&]s=(\\d+)"
+                    )
+                        .find(episodeUrl)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toIntOrNull()
+                        ?: 1
+
+                val episodeTitle =
+                    element.text()
+                        .replace(
+                            Regex("\\s+"),
+                            " "
+                        )
+                        .trim()
+                        .ifBlank {
+                            "Bölüm $episodeNumber"
+                        }
+
+                episodes +=
+                    newEpisode(episodeUrl) {
+
+                        name = episodeTitle
+
+                        season = seasonNumber
+
+                        episode = episodeNumber
+
+                        posterUrl = poster
+                    }
+            }
+        }
 
         /*
-         * Dizi sonucu
+         * Aynı bölümü birden fazla selector yakalarsa
+         * Episode.data üzerinden tekrarları kaldırıyoruz.
          */
+        val uniqueEpisodes =
+            episodes
+                .distinctBy { it.data }
+                .sortedWith(
+                    compareBy<Episode> {
+                        it.season ?: 1
+                    }.thenBy {
+                        it.episode ?: 1
+                    }
+                )
+
         return newTvSeriesLoadResponse(
             title,
             url,
@@ -313,6 +550,7 @@ class DramaDizilerimProvider : MainAPI() {
         ) {
 
             posterUrl = poster
+
             plot = description
         }
     }
@@ -320,68 +558,198 @@ class DramaDizilerimProvider : MainAPI() {
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        subtitleCallback: (
+            SubtitleFile
+        ) -> Unit,
+        callback: (
+            ExtractorLink
+        ) -> Unit
     ): Boolean {
 
-        val doc = app.get(data).document
+        /*
+         * data artık doğrudan gerçek bölüm URL'sidir:
+         *
+         * /izle/disi-kurt-gelin?s=1&e=1
+         */
+        val episodeDocument =
+            app.get(data).document
 
         /*
-         * Öncelikle iframe src
+         * Sitenin gerçek player kaynağı:
+         *
+         * .lazy-player[data-src]
          */
-        var embed =
-            doc.selectFirst(
+        val embedUrls =
+            LinkedHashSet<String>()
+
+        episodeDocument
+            .select(
+                ".lazy-player[data-src]"
+            )
+            .forEach { element ->
+
+                val value =
+                    element.attr("data-src")
+                        .trim()
+
+                if (value.isNotBlank()) {
+                    embedUrls +=
+                        absoluteUrl(value)
+                }
+            }
+
+        /*
+         * Fallback olarak doğrudan iframe varsa onu da al.
+         */
+        episodeDocument
+            .select(
                 "iframe[src]"
-            )?.attr("abs:src")
+            )
+            .forEach { iframe ->
 
-        /*
-         * iframe data-src
-         */
-        if (embed.isNullOrBlank()) {
+                val value =
+                    iframe.attr("abs:src")
+                        .trim()
 
-            embed =
-                doc.selectFirst(
-                    "iframe[data-src]"
-                )?.attr("data-src")
-        }
+                if (value.isNotBlank()) {
+                    embedUrls += value
+                }
+            }
 
-        /*
-         * Lazy player
-         */
-        if (embed.isNullOrBlank()) {
-
-            embed =
-                doc.selectFirst(
-                    ".lazy-player[data-src]"
-                )?.attr("data-src")
-        }
-
-        /*
-         * Doğrudan video source
-         */
-        if (embed.isNullOrBlank()) {
-
-            embed =
-                doc.selectFirst(
-                    "video source[src]"
-                )?.attr("abs:src")
-        }
-
-        /*
-         * Hiçbir oynatıcı bulunamadıysa
-         */
-        if (embed.isNullOrBlank()) {
+        if (embedUrls.isEmpty()) {
             return false
         }
 
+        var linkFound = false
+
         /*
-         * CloudStream extractor sistemine gönder.
+         * Önce sitenin kendi embed sayfasını açıyoruz.
+         *
+         * embed.php bir CloudStream extractor URL'si
+         * değildir. Bu nedenle onu doğrudan
+         * loadExtractor() içine vermiyoruz.
          */
-        return loadExtractor(
-            embed,
-            data,
-            subtitleCallback,
-            callback
-        )
+        for (embedUrl in embedUrls) {
+
+            try {
+
+                val embedDocument =
+                    app.get(
+                        embedUrl,
+                        referer = data
+                    ).document
+
+                /*
+                 * Embed sayfasındaki iframe'ler.
+                 */
+                val iframeUrls =
+                    LinkedHashSet<String>()
+
+                embedDocument
+                    .select(
+                        "iframe[src]"
+                    )
+                    .forEach { iframe ->
+
+                        val iframeUrl =
+                            iframe
+                                .attr("abs:src")
+                                .trim()
+
+                        if (
+                            iframeUrl.isNotBlank()
+                        ) {
+                            iframeUrls +=
+                                iframeUrl
+                        }
+                    }
+
+                /*
+                 * data-src kullanılan iframe/player.
+                 */
+                embedDocument
+                    .select(
+                        "iframe[data-src]"
+                    )
+                    .forEach { iframe ->
+
+                        val iframeUrl =
+                            absoluteUrl(
+                                iframe
+                                    .attr("data-src")
+                                    .trim()
+                            )
+
+                        if (
+                            iframeUrl.isNotBlank()
+                        ) {
+                            iframeUrls +=
+                                iframeUrl
+                        }
+                    }
+
+                /*
+                 * Doğrudan video kaynakları.
+                 */
+                embedDocument
+                    .select(
+                        "video source[src], video[src]"
+                    )
+                    .forEach { video ->
+
+                        val videoUrl =
+                            video
+                                .attr("abs:src")
+                                .trim()
+
+                        if (
+                            videoUrl.isNotBlank()
+                        ) {
+
+                            callback(
+                                newExtractorLink(
+                                    name,
+                                    "DramaDizilerim",
+                                    videoUrl,
+                                    data,
+                                    false
+                                )
+                            )
+
+                            linkFound = true
+                        }
+                    }
+
+                /*
+                 * Gerçek iframe bulunduysa
+                 * CloudStream extractor sistemine veriyoruz.
+                 */
+                for (iframeUrl in iframeUrls) {
+
+                    try {
+
+                        val extracted =
+                            loadExtractor(
+                                iframeUrl,
+                                data,
+                                subtitleCallback,
+                                callback
+                            )
+
+                        if (extracted) {
+                            linkFound = true
+                        }
+
+                    } catch (_: Exception) {
+                        // Bir player çalışmazsa diğerini dene.
+                    }
+                }
+
+            } catch (_: Exception) {
+                // Bir embed kaynağı başarısızsa diğerini dene.
+            }
+        }
+
+        return linkFound
     }
 }
