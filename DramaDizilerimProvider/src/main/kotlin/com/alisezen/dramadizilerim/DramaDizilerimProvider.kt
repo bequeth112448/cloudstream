@@ -33,6 +33,30 @@ class DramaDizilerimProvider : MainAPI() {
         }
     }
 
+    /*
+     * URL'yi path + query olacak şekilde normalize eder,
+     * anchor'ı atar, sondaki '/' işaretini temizler.
+     * loadLinks() içinde doğru bölümü (v-slide) bulmak
+     * için kullanılıyor.
+     */
+    private fun normalizedPathAndQuery(
+        rawUrl: String
+    ): Pair<String, String> {
+
+        val withoutAnchor =
+            rawUrl.substringBefore("#")
+
+        val path =
+            withoutAnchor
+                .substringBefore("?")
+                .trimEnd('/')
+
+        val query =
+            withoutAnchor.substringAfter("?", "")
+
+        return path to query
+    }
+
     private fun posterFromElement(
         element: org.jsoup.nodes.Element
     ): String? {
@@ -75,6 +99,69 @@ class DramaDizilerimProvider : MainAPI() {
         return element.text()
             .replace(Regex("\\s+"), " ")
             .trim()
+    }
+
+    /*
+     * Bir .v-slide elemanından Episode nesnesi üretir.
+     * load() içinde birden çok yerde kullanılıyor.
+     */
+    private fun episodeFromSlide(
+        slide: org.jsoup.nodes.Element,
+        fallbackPoster: String?
+    ): Episode? {
+
+        val rawUrl =
+            slide.attr("data-url").trim()
+
+        if (rawUrl.isBlank()) {
+            return null
+        }
+
+        val episodeUrl =
+            absoluteUrl(rawUrl)
+
+        if (
+            episodeUrl.isBlank() ||
+            !episodeUrl.contains("/izle/")
+        ) {
+            return null
+        }
+
+        val episodeNumber =
+            slide.attr("data-episode")
+                .toIntOrNull()
+                ?: 1
+
+        val seasonNumber =
+            slide.attr("data-season")
+                .toIntOrNull()
+                ?: 1
+
+        val episodeTitle =
+            slide.attr("data-title")
+                .trim()
+                .ifBlank {
+                    "Bölüm $episodeNumber"
+                }
+
+        val episodePoster =
+            slide.attr("data-poster")
+                .trim()
+                .takeIf { it.isNotBlank() }
+                ?.let { absoluteUrl(it) }
+
+        return newEpisode(episodeUrl) {
+
+            name = episodeTitle
+
+            season = seasonNumber
+
+            episode = episodeNumber
+
+            posterUrl =
+                episodePoster
+                    ?: fallbackPoster
+        }
     }
 
     override suspend fun getMainPage(
@@ -163,9 +250,6 @@ class DramaDizilerimProvider : MainAPI() {
         val searchQuery =
             query.trim()
 
-        /*
-         * Boş arama yapılırsa hiçbir sonuç döndürme.
-         */
         if (searchQuery.isBlank()) {
             return emptyList()
         }
@@ -173,13 +257,15 @@ class DramaDizilerimProvider : MainAPI() {
         try {
 
             /*
-             * DramaDizilerim'in dizi listesini alıyoruz.
+             * DÜZELTME:
+             * Önceden "$mainUrl/series" adresine istek
+             * atılıyordu; böyle bir sayfa olmadığı için
+             * arama hep boş dönüyordu.
              *
-             * Buradaki gerçek /dizi/ bağlantıları
-             * üzerinden arama yapıyoruz.
+             * Dizi listesinin gerçek adresi "$mainUrl/dizi".
              */
             val document =
-                app.get("$mainUrl/series").document
+                app.get("$mainUrl/dizi").document
 
             document.select(
                 "a[href*='/dizi/']"
@@ -190,9 +276,6 @@ class DramaDizilerimProvider : MainAPI() {
                         .attr("abs:href")
                         .trim()
 
-                /*
-                 * Yalnızca gerçek dizi bağlantılarını kabul et.
-                 */
                 if (
                     url.isBlank() ||
                     !url.contains("/dizi/")
@@ -200,9 +283,6 @@ class DramaDizilerimProvider : MainAPI() {
                     return@forEach
                 }
 
-                /*
-                 * Query string ve anchor temizleniyor.
-                 */
                 val normalizedUrl =
                     url.substringBefore("#")
                         .substringBefore("?")
@@ -215,9 +295,6 @@ class DramaDizilerimProvider : MainAPI() {
                     return@forEach
                 }
 
-                /*
-                 * Dizi başlığını bul.
-                 */
                 val title =
                     titleFromElement(element)
                         .trim()
@@ -226,10 +303,6 @@ class DramaDizilerimProvider : MainAPI() {
                     return@forEach
                 }
 
-                /*
-                 * Kullanıcının aradığı kelime başlıkta yoksa
-                 * sonucu gösterme.
-                 */
                 if (
                     !title.contains(
                         searchQuery,
@@ -260,22 +333,10 @@ class DramaDizilerimProvider : MainAPI() {
         } catch (_: Exception) {
             /*
              * Siteye erişilemezse boş sonuç döndür.
-             *
-             * Burada artık sahte URL oluşturulmuyor.
+             * Sahte URL oluşturulmuyor.
              */
         }
 
-        /*
-         * ÖNEMLİ:
-         *
-         * Eğer gerçek dizi bulunamadıysa sonuç boş kalır.
-         *
-         * Artık:
-         *
-         * /dizi/ali
-         *
-         * gibi sahte URL oluşturulmuyor.
-         */
         return results
     }
 
@@ -283,7 +344,7 @@ class DramaDizilerimProvider : MainAPI() {
         url: String
     ): LoadResponse {
 
-        val document =
+        var document =
             app.get(url).document
 
         val title =
@@ -292,6 +353,7 @@ class DramaDizilerimProvider : MainAPI() {
                     "meta[property='og:title']"
                 )
                 ?.attr("content")
+                ?.substringBefore(" Sezon ")
                 ?.substringBefore(" Türkçe Dublaj")
                 ?.substringBefore(" Altyazılı")
                 ?.trim()
@@ -362,80 +424,83 @@ class DramaDizilerimProvider : MainAPI() {
 
         /*
          * 1. Öncelik:
-         * .v-slide[data-url]
+         * Elimizdeki dokümanda doğrudan .v-slide[data-url]
+         * varsa (örn. url zaten bir /izle/ sayfasıysa),
+         * bölümleri doğrudan buradan al.
          */
         document.select(
             ".v-slide[data-url]"
         ).forEach { slide ->
 
-            val rawUrl =
-                slide
-                    .attr("data-url")
-                    .trim()
-
-            if (rawUrl.isBlank()) {
-                return@forEach
-            }
-
-            val episodeUrl =
-                absoluteUrl(rawUrl)
-
-            if (
-                episodeUrl.isBlank() ||
-                !episodeUrl.contains("/izle/")
-            ) {
-                return@forEach
-            }
-
-            val episodeNumber =
-                slide
-                    .attr("data-episode")
-                    .toIntOrNull()
-                    ?: 1
-
-            val seasonNumber =
-                slide
-                    .attr("data-season")
-                    .toIntOrNull()
-                    ?: 1
-
-            val episodeTitle =
-                slide
-                    .attr("data-title")
-                    .trim()
-                    .ifBlank {
-                        "Bölüm $episodeNumber"
-                    }
-
-            val episodePoster =
-                slide
-                    .attr("data-poster")
-                    .trim()
-                    .takeIf {
-                        it.isNotBlank()
-                    }
-                    ?.let {
-                        absoluteUrl(it)
-                    }
-
-            episodes +=
-                newEpisode(episodeUrl) {
-
-                    name = episodeTitle
-
-                    season = seasonNumber
-
-                    episode = episodeNumber
-
-                    posterUrl =
-                        episodePoster
-                            ?: poster
-                }
+            episodeFromSlide(slide, poster)
+                ?.let { episodes += it }
         }
 
         /*
-         * 2. Fallback:
-         * data-url + data-episode
+         * 2. DÜZELTME:
+         * "/dizi/{slug}" sayfasında genelde .v-slide yok;
+         * sadece dizi tanıtımı ve "İzle" butonu bulunuyor.
+         * Gerçek bölüm listesi (TÜM sezon/bölümler tek
+         * seferde) ilk bölümün "/izle/..." sayfasında
+         * .v-slide olarak geliyor.
+         *
+         * Bu yüzden episodes hâlâ boşsa: sayfadaki ilk
+         * "/izle/" linkini bulup o sayfayı ayrıca çekiyoruz
+         * ve TÜM .v-slide'ları oradan alıyoruz.
+         */
+        if (episodes.isEmpty()) {
+
+            val firstEpisodeUrl =
+                document
+                    .selectFirst(
+                        "[data-url*='/izle/']"
+                    )
+                    ?.attr("data-url")
+                    ?.trim()
+                    ?.let { absoluteUrl(it) }
+                    ?: document
+                        .selectFirst(
+                            "a[href*='/izle/']"
+                        )
+                        ?.attr("abs:href")
+                        ?.trim()
+
+            if (!firstEpisodeUrl.isNullOrBlank()) {
+
+                try {
+
+                    val episodeDocument =
+                        app.get(firstEpisodeUrl).document
+
+                    episodeDocument.select(
+                        ".v-slide[data-url]"
+                    ).forEach { slide ->
+
+                        episodeFromSlide(slide, poster)
+                            ?.let { episodes += it }
+                    }
+
+                    /*
+                     * Eğer bu ikinci sayfada poster/açıklama
+                     * daha iyiyse (ilk sayfa /dizi/ sayfasıysa
+                     * genelde daha iyi bilgi orada olur), bu
+                     * kısmı olduğu gibi bırakıyoruz; sadece
+                     * bölüm verisi için ek istek yaptık.
+                     */
+
+                } catch (_: Exception) {
+                    /*
+                     * İkinci istek başarısızsa, alttaki
+                     * fallback'lere devam edilecek.
+                     */
+                }
+            }
+        }
+
+        /*
+         * 3. Fallback:
+         * data-url + data-episode (v-slide olmayan
+         * ama yine de data attribute'lu elemanlar)
          */
         if (episodes.isEmpty()) {
 
@@ -497,8 +562,10 @@ class DramaDizilerimProvider : MainAPI() {
         }
 
         /*
-         * 3. Fallback:
-         * Normal /izle/ linkleri
+         * 4. Fallback:
+         * Normal /izle/ linkleri (yalnızca tek bölüm
+         * bulunabilir, ama hiçbir şey bulunamamasından
+         * iyidir)
          */
         if (episodes.isEmpty()) {
 
@@ -564,10 +631,6 @@ class DramaDizilerimProvider : MainAPI() {
             }
         }
 
-        /*
-         * Aynı bölüm birden fazla kez geldiyse
-         * sezon + bölüm sırasına göre düzenle.
-         */
         val uniqueEpisodes =
             episodes
                 .distinctBy {
@@ -608,49 +671,68 @@ class DramaDizilerimProvider : MainAPI() {
         val episodeDocument =
             app.get(data).document
 
+        val (targetPath, targetQuery) =
+            normalizedPathAndQuery(data)
+
+        /*
+         * DÜZELTME (kritik bug):
+         * "/izle/{slug}" sayfası dizinin TÜM bölümlerini
+         * .v-slide elemanları olarak aynı anda içeriyor.
+         * Önceden ".lazy-player[data-src]" class seçiciyle
+         * SAYFADAKİ TÜM bölümlerin video linkleri toplanıp
+         * hepsi extractor'a gönderiliyordu — yani 1. bölüm
+         * açıldığında 40+ bölümün embed'i birden işleniyordu.
+         *
+         * Artık data-url'i (path + query) tam olarak eşleşen
+         * TEK v-slide'ı buluyoruz ve sadece onun player'ını
+         * kullanıyoruz.
+         */
+        val targetSlide =
+            episodeDocument
+                .select(".v-slide[data-url]")
+                .firstOrNull { slide ->
+
+                    val (slidePath, slideQuery) =
+                        normalizedPathAndQuery(
+                            slide.attr("data-url").trim()
+                        )
+
+                    slidePath == targetPath &&
+                        slideQuery == targetQuery
+                }
+
         val embedUrls =
             LinkedHashSet<String>()
 
-        /*
-         * DramaDizilerim player:
-         *
-         * .lazy-player[data-src]
-         */
-        episodeDocument
-            .select(
-                ".lazy-player[data-src]"
-            )
-            .forEach { element ->
-
-                val value =
-                    element
-                        .attr("data-src")
-                        .trim()
-
-                if (value.isNotBlank()) {
-                    embedUrls +=
-                        absoluteUrl(value)
-                }
-            }
+        targetSlide
+            ?.selectFirst(".lazy-player[data-src]")
+            ?.attr("data-src")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { embedUrls += absoluteUrl(it) }
 
         /*
-         * Doğrudan iframe varsa onu da al.
+         * Fallback: eşleşen v-slide bulunamazsa (sayfa
+         * yapısı farklıysa ya da tek bölümlük bir sayfaysa)
+         * sayfadaki iframe'lere bak. NOT: artık TÜM
+         * .lazy-player'ları toplamıyoruz.
          */
-        episodeDocument
-            .select(
-                "iframe[src]"
-            )
-            .forEach { iframe ->
+        if (embedUrls.isEmpty()) {
 
-                val value =
-                    iframe
-                        .attr("abs:src")
-                        .trim()
+            episodeDocument
+                .select("iframe[src]")
+                .forEach { iframe ->
 
-                if (value.isNotBlank()) {
-                    embedUrls += value
+                    val value =
+                        iframe
+                            .attr("abs:src")
+                            .trim()
+
+                    if (value.isNotBlank()) {
+                        embedUrls += value
+                    }
                 }
-            }
+        }
 
         if (embedUrls.isEmpty()) {
             return false
@@ -658,9 +740,6 @@ class DramaDizilerimProvider : MainAPI() {
 
         var linkFound = false
 
-        /*
-         * Player/embed sayfalarını aç.
-         */
         for (embedUrl in embedUrls) {
 
             try {
@@ -674,9 +753,6 @@ class DramaDizilerimProvider : MainAPI() {
                 val iframeUrls =
                     LinkedHashSet<String>()
 
-                /*
-                 * Normal iframe
-                 */
                 embedDocument
                     .select(
                         "iframe[src]"
@@ -693,9 +769,6 @@ class DramaDizilerimProvider : MainAPI() {
                         }
                     }
 
-                /*
-                 * Lazy iframe
-                 */
                 embedDocument
                     .select(
                         "iframe[data-src]"
@@ -714,10 +787,6 @@ class DramaDizilerimProvider : MainAPI() {
                         }
                     }
 
-                /*
-                 * Embed sayfasında doğrudan video
-                 * kaynağı varsa.
-                 */
                 embedDocument
                     .select(
                         "video source[src], video[src]"
@@ -746,10 +815,6 @@ class DramaDizilerimProvider : MainAPI() {
                         }
                     }
 
-                /*
-                 * Embed içindeki iframe'leri
-                 * CloudStream extractor sistemine gönder.
-                 */
                 for (iframeUrl in iframeUrls) {
 
                     try {
